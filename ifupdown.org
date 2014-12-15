@@ -1598,7 +1598,69 @@ out exactly what we're going to do it to. So, we need to know the set
 of interfaces we're going to hax0r. This is just an array of interfaces,
 either [[physical_iface]] or [[physical_iface=logical_iface]].
 
+#+BEGIN_SRC C :noweb-ref variables local to main
+int n_target_ifaces;
+char **target_iface;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref each target interface, [[i]]
+i = 0; i < n_target_ifaces; i++
+#+END_SRC
+
+We initialise this based on our command line arguments.
+
+#+BEGIN_SRC C :noweb-ref determine target interfaces
+if (do_all || list) {
+	if (<<we're listing known interfaces>>
+            || <<we're bringing interfaces up>>) {
+		allowup_defn *autos = find_allowup(defn, allow_class ? allow_class : "auto");
+		target_iface = autos ? autos->interfaces : NULL;
+		n_target_ifaces = autos ? autos->n_interfaces : 0;
+	} else if (<<we're taking interfaces down>>) {
+		read_all_state(argv[0], &target_iface, &n_target_ifaces);
+	} else {
+		fprintf(stderr, "%s: can't tell if interfaces are going up or down\n", argv[0]);
+		exit(1);
+	}	
+} else {
+	target_iface = argv + optind;
+	n_target_ifaces = argc - optind;
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref initialize [[iface]] to [[i]]th target interface
+strncpy(iface, target_iface[i], sizeof(iface));
+iface[sizeof(iface)-1] = '\0';
+
+{
+	char *pch;
+	if ((pch = strchr(iface, '='))) {
+		*pch = '\0';
+		strncpy(liface, pch+1, sizeof(liface));
+		liface[sizeof(liface)-1] = '\0';
+	} else {
+		strncpy(liface, iface, sizeof(liface));
+		liface[sizeof(liface)-1] = '\0';
+	}
+}
+#+END_SRC
+
 ** TODO State
+
+Since it's generally not feasible to rerun a mapping script after an
+interface is configured (since a mapping script may well bring the
+interface down while it's investigating matters), we need to maintain a
+statefile between invocations to keep track of which physical interfaces
+were mapped to which logical ones.  This file also serves to record
+which interfaces have been configured so far, and which haven't.  It
+is stored in [[/run/network/ifstate]].
+
+Because different interfaces may be brought up and down at the same time,
+it's important that all updates to the state file are atomic and that we
+aren't confused by any changes made by another running process.  For this
+reason we use functions to examine or modify the state file at the point
+necessary rather than holding it all in memory.
+
 * TODO Architecture-dependent functions
 
 ** TODO Common functions
