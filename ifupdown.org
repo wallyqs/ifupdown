@@ -606,7 +606,156 @@ $DEB_HOST_ARCH_OS =~ s/\n//;
 *** TODO Command Execution
 *** TODO Executing a list of commands
 *** TODO [[iface_up()]], [[iface_down()]], [[iface_list()]], and [[iface_query()]]
+
+Our functions, then are:
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+int iface_preup(interface_defn *iface);
+int iface_postup(interface_defn *iface);
+int iface_up(interface_defn *iface);
+int iface_predown(interface_defn *iface);
+int iface_postdown(interface_defn *iface);
+int iface_down(interface_defn *iface);
+int iface_list(interface_defn *iface);
+int iface_query(interface_defn *iface);
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref execute functions
+
+int iface_preup(interface_defn *iface) {
+	if (!iface->method->up(iface,check)) return -1;
+
+	set_environ(iface, "start", "pre-up");
+	if (!execute_options(iface,doit,"pre-up")) return 0;
+	if (!execute_scripts(iface,doit,"pre-up")) return 0;
+
+	return 1;
+}
+
+int iface_postup(interface_defn *iface) {
+	if (!iface->method->up(iface,doit)) return 0;
+
+	set_environ(iface, "start", "post-up");
+	if (!execute_options(iface,doit,"up")) return 0;
+	if (!execute_scripts(iface,doit,"up")) return 0;
+
+	return 1;
+}
+
+int iface_up(interface_defn *iface) {
+	int result = iface_preup(iface);
+	if (result != 1) return result;
+	return iface_postup(iface);
+}
+
+#+END_SRC
+
+When bringing interface down, we check if there's [[ifup]] is still running
+and send [[SIGTERM]] to terminate it.
+
+#+BEGIN_SRC C :noweb-ref terminate ifup if it's still running
+char pidfilename[100];
+snprintf(pidfilename, sizeof(pidfilename), RUN_DIR "ifup-%s.pid",
+	iface->real_iface);
+FILE * pidfile = fopen(pidfilename, "r");
+if (pidfile) {
+	int pid;
+	if (fscanf(pidfile, "%d", &pid)) {
+		if (verbose) {
+			fprintf(stderr, "Terminating ifup (pid %d)\n", pid);
+		}
+		kill((pid_t) -pid, SIGTERM);
+	}
+	fclose(pidfile);
+	unlink(pidfilename);
+}
+
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref execute functions
+
+int iface_predown(interface_defn *iface) {
+	if (!no_act) {
+	    <<terminate ifup if it's still running>>
+	}
+
+	if (!iface->method->down(iface,check)) return -1;
+
+	set_environ(iface, "stop", "pre-down");
+	if (!execute_scripts(iface,doit,"down")) return 0;
+	if (!execute_options(iface,doit,"down")) return 0;
+
+	return 1;
+}
+
+int iface_postdown(interface_defn *iface) {
+	if (!iface->method->down(iface,doit)) return 0;
+
+	set_environ(iface, "stop", "post-down");
+	if (!execute_scripts(iface,doit,"post-down")) return 0;
+	if (!execute_options(iface,doit,"post-down")) return 0;
+
+	return 1;
+}
+
+int iface_down(interface_defn *iface) {
+	int result = iface_predown(iface);
+	if (result != 1) return result;
+	return iface_postdown(iface);
+}
+
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref execute functions
+
+int iface_list(interface_defn *iface) {
+	printf("%s\n",iface->real_iface);
+	return 0;
+}
+
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref execute functions
+
+int iface_query(interface_defn *iface) {
+	int i;
+	for (i = 0; i < iface->n_options; i++) {
+		printf("%s: %s\n",iface->option[i].name, iface->option[i].value);
+	}
+	return 0;
+}
+
+#+END_SRC
 ** TODO Command Parsing
+
+All the above just leave one thing out: how the address family method's
+configuration function gets back to calling [[doit()]]. This function
+answers that question:
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+int execute(char *command, interface_defn *ifd, execfn *exec);
+#+END_SRC
+
+At the somewhat abstract level, this is fairly trivial. The devil is
+in the details of the parsing, which makes up the rest of the module.
+
+#+BEGIN_SRC C :noweb-ref exported functions
+
+int execute(char *command, interface_defn *ifd, execfn *exec) { 
+	char *out;
+	int ret;
+
+	out = parse(command, ifd);
+	if (!out) { return 0; }
+
+	ret = (*exec)(out);
+
+	free(out);
+	return ret;
+}
+
+#+END_SRC
+
 *** TODO Maintain output buffer
 *** TODO Escaped characters
 *** TODO Optional components
