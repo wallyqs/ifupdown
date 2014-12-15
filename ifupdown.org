@@ -1188,6 +1188,282 @@ bool match_patterns(char * string, int argc, char * argv[]) {
 #+END_SRC
 
 ** TODO Argument Handling
+
+Okay, so next on our agenda is argument handling.
+
+We'll do argument handling via the GNU [[getopt]] function, which
+means we have to include the appropriate header, and define a cute
+little structure to represent our long options:
+
+#+BEGIN_SRC C :tangle src/headers
+#include <getopt.h>
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref variables local to main
+struct option long_opts[] = {
+	{"help",        no_argument,       NULL, 'h'},
+	{"version",     no_argument,       NULL, 'V'},
+	{"verbose",     no_argument,       NULL, 'v'},
+	{"all",         no_argument,       NULL, 'a'},
+	{"allow",	required_argument, NULL,  3 },
+	{"interfaces",  required_argument, NULL, 'i'},
+	{"exclude",     required_argument, NULL, 'X'},
+	{"no-act",      no_argument,       NULL, 'n'},
+	{"no-mappings", no_argument,       NULL,  1 },
+	{"no-scripts",  no_argument,       NULL,  4 },
+	{"no-loopback", no_argument,       NULL,  5 },
+	{"force",       no_argument,       NULL,  2 },
+	{"option",      required_argument, NULL, 'o'},
+	{"list",        no_argument,       NULL, 'l'},
+	{0,0,0,0}
+};
+#+END_SRC
+
+The usual way of dealing with options then is to have a variable to store
+the various things. The only special note here is that we need to export
+[[no_act]] and [[verbose]] to the [[execute]] module.
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+extern int no_act;
+extern int verbose;
+extern int run_scripts;
+extern bool no_loopback;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref constant definitions
+#ifndef RUN_DIR
+#define RUN_DIR "/run/network/"
+#endif
+
+#ifndef LO_IFACE
+#define LO_IFACE "lo"
+#endif
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref main global variables
+int no_act = 0;
+int run_scripts = 1;
+int verbose = 0;
+bool no_loopback = false;
+char *statefile = RUN_DIR "ifstate";
+char *tmpstatefile = RUN_DIR ".ifstate.tmp";
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref variables local to main
+int do_all = 0;
+int run_mappings = 1;
+int force = 0;
+int list = 0;
+char *allow_class = NULL;
+char *interfaces = "/etc/network/interfaces";
+char **excludeint = NULL;
+int excludeints = 0;
+variable *option = NULL;
+int n_options = 0;
+int max_options = 0;
+#+END_SRC
+
+We'll also have two helper functions to display usage information,
+like so:
+
+#+BEGIN_SRC C :noweb-ref main functions declarations
+static void usage(char *execname);
+static void help(char *execname, int (*cmds)(interface_defn *));
+static void version(char *execname);
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref main functions
+static void usage(char *execname) {
+	fprintf(stderr, "%s: Use --help for help\n", execname);
+	exit(1);
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref main functions
+static void version(char *execname) {
+	printf("%s version " IFUPDOWN_VERSION "\n", execname);
+	printf("Copyright (c) 1999-2007 Anthony Towns\n\n");
+	printf(
+
+"This program is free software; you can redistribute it and/or modify\n"
+"it under the terms of the GNU General Public License as published by\n"
+"the Free Software Foundation; either version 2 of the License, or (at\n"
+"your option) any later version.\n"
+
+	);
+	exit(0);
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref main functions
+static void help(char *execname, int (*cmds)(interface_defn *)) {
+	printf("Usage: %s <options> <ifaces...>\n", execname);
+	if (<<we're listing known interfaces>>
+	    || <<we're querying an interface config>>)
+		printf("       %s <options> --list\n", execname);
+	printf("\n");
+	printf("Options:\n");
+	printf("\t-h, --help\t\tthis help\n");
+	printf("\t-V, --version\t\tcopyright and version information\n");
+	printf("\t-a, --all\t\tprocess all interfaces marked \"auto\"\n");
+	printf("\t--allow CLASS\t\tignore non-\"allow-CLASS\" interfaces\n");
+	printf("\t-i, --interfaces FILE\tuse FILE for interface definitions\n");
+	printf("\t-X, --exclude PATTERN\texclude interfaces from the list of\n\t\t\t\tinterfaces to operate on by a PATTERN\n");
+	if (!<<we're listing known interfaces>>
+	    && !<<we're querying an interface config>>)
+		printf("\t-n, --no-act\t\tprint out what would happen, but don't do it\n");
+	printf("\t\t\t\t(note that this option doesn't disable mappings)\n");
+	printf("\t-v, --verbose\t\tprint out what would happen before doing it\n");
+	printf("\t-o OPTION=VALUE\t\tset OPTION to VALUE as though it were in\n");
+	printf("\t\t\t\t/etc/network/interfaces\n");
+	printf("\t--no-mappings\t\tdon't run any mappings\n");
+	printf("\t--no-scripts\t\tdon't run any hook scripts\n");
+	printf("\t--no-loopback\t\tdon't act specially on the loopback device\n");
+	if (!<<we're listing known interfaces>>
+	    && !<<we're querying an interface config>>)
+		printf("\t--force\t\t\tforce de/configuration\n");
+	if (<<we're listing known interfaces>>
+	    || <<we're querying an interface config>>)
+		printf("\t--list\t\t\tlist all matching known interfaces\n");
+	exit(0);
+}
+#+END_SRC
+
+Now, the meat of argument parsing is done with [[getopt()]] and a
+[[switch]], like so:
+
+#+BEGIN_SRC C :noweb-ref parse arguments
+for(;;) {
+	int c;
+	c = getopt_long(argc, argv, "X:s:i:o:hVvnal", long_opts, NULL);
+	if (c == EOF) break;
+
+	switch(c) {
+		<<[[getopt]] possibilities>>
+	}
+}
+
+<<check unreasonable arguments>>
+#+END_SRC
+
+Now, our [[getopt]] possibilities are basically each option, or something
+really bad. Actual interface names are automagically collected at the end
+by [[getopt()]].So first, the legitimate cases get handled:
+
+#+BEGIN_SRC C :noweb-ref [[getopt]] possibilities
+case 'i':
+	interfaces = strdup(optarg);
+	break;
+
+case 'v':
+	verbose = 1;
+	break;
+
+case 'a':
+	do_all = 1;
+	break;
+
+case 3:
+	allow_class = strdup(optarg);
+	break;
+
+case 'n':
+        if (<<we're listing known interfaces>> || <<we're querying an interface config>>)
+		usage(argv[0]);
+	no_act = 1;
+	break;
+
+case 1:
+	run_mappings = 0;
+	break;
+
+case 4:
+	run_scripts = 0;
+	break;
+
+case 5:
+	no_loopback = true;
+	break;
+
+case 2:
+        if (<<we're listing known interfaces>> || <<we're querying an interface config>>)
+		usage(argv[0]);
+	force = 1;
+	break;
+
+case 'X':
+	/* */
+	excludeints++;
+	excludeint = realloc(excludeint, excludeints * sizeof(char *));
+	if (excludeint == NULL) {
+		char * filename = argv[0];
+		<<report internal error and die>>
+	}
+	excludeint[excludeints - 1] = strdup(optarg);
+	break;
+
+case 'o':
+{
+	char *name = strdup(optarg);
+	char *val = strchr(name, '=');
+	if (val == NULL) {
+		fprintf(stderr, "Error in --option \"%s\" -- no \"=\" character\n",
+			optarg);
+		exit(1);
+	}
+	*val++ = '\0';
+
+	if (strcmp(name, "post-up") == 0) {
+		strcpy(name, "up");
+	}
+	if (strcmp(name, "pre-down") == 0) {
+		strcpy(name, "down");
+	}
+	
+	set_variable(argv[0], name, val, &option, &n_options, &max_options);
+	free(name);
+
+	break;
+}
+
+case 'l':
+        if (!<<we're querying an interface config>>)
+		usage(argv[0]);
+	list = 1;
+	cmds = iface_list;
+	break;
+
+#+END_SRC
+
+And we also have the possibility that the user is just making up
+options:
+
+#+BEGIN_SRC C :noweb-ref [[getopt]] possibilities
+default:
+	usage(argv[0]);
+	break;
+#+END_SRC
+
+After all that there are still some things that can be a bit weird. We
+can be told either to act on all interfaces (except the noauto ones),
+or we can be told to act on specific interface. We won't accept been
+told to do both, and we won't accept not being told to do one or the
+other. We can test these two cases as follows:
+
+#+BEGIN_SRC C :noweb-ref check unreasonable arguments
+if (argc - optind > 0 && (do_all || list)) {
+	usage(argv[0]);
+}
+
+if (argc - optind == 0 && !do_all && !list) {
+	usage(argv[0]);
+}
+
+if (do_all && <<we're querying an interface config>>) {
+	usage(argv[0]);
+}
+#+END_SRC
+
 ** TODO Reading the Interfaces File
 ** TODO Execution
 
@@ -1980,6 +2256,238 @@ unsigned int mylinux(int maj, int rev, int min) {
 ** TODO Hurd-specific functions
 * TODO Linux Address Families
 ** TODO IPv4 Address Family
+
+#+BEGIN_SRC C :noweb-ref address family declarations
+extern address_family addr_inet;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref address family references
+&addr_inet, 
+#+END_SRC
+
+#+BEGIN_SRC C :tangle inet.defn
+address_family inet
+architecture linux
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref Linux inet methods
+<<Linux inet methods: loopback>>
+
+<<Linux inet methods: static>>
+
+<<inet methods: manual>>
+
+<<Linux inet methods: dhcp>>
+
+<<inet methods: bootp>>
+
+<<Linux inet methods: tunnel>>
+
+<<inet methods: ppp>>
+
+<<inet methods: wvdial>>
+
+<<inet methods: ipv4ll>>
+#+END_SRC
+
+#+BEGIN_SRC conf :noweb-ref Linux inet methods: loopback
+method loopback
+  description
+    This method may be used to define the IPv4 loopback interface.
+
+  up
+    ip link set dev %iface% up if (!iface_is_lo())
+
+  down
+    ip link set dev %iface% down if (!iface_is_lo())
+#+END_SRC
+
+#+BEGIN_SRC conf
+method static
+  description
+    This method may be used to define Ethernet interfaces with statically
+    allocated IPv4 addresses.
+      
+  options
+    address address             -- Address (dotted quad/netmask) *required*
+    netmask mask                -- Netmask (dotted quad or CIDR)
+    broadcast broadcast_address -- Broadcast address (dotted quad, + or -) [+]
+    metric metric               -- Routing metric for default gateway (integer)
+    gateway address             -- Default gateway (dotted quad)
+    pointopoint address         -- Address of other end point (dotted quad). \
+                                   Note the spelling of "point-to".
+    hwaddress address           -- Link local address.
+    mtu size                    -- MTU size
+    scope                       -- Address validity scope. Possible values: \
+                                   global, link, host
+
+  conversion
+    hwaddress cleanup_hwaddress
+    address compute_v4_mask =netmask?
+    address compute_v4_addr
+    broadcast compute_v4_broadcast
+
+  up
+    ip addr add %address%[[/%netmask%]] [[broadcast %broadcast%]] \
+	[[peer %pointopoint%]] [[scope %scope%]] dev %iface% label %iface%
+    ip link set dev %iface% [[mtu %mtu%]] [[address %hwaddress%]] up
+
+    [[ ip route add default via %gateway% [[metric %metric%]] dev %iface% ]]
+
+  down
+    [[ ip route del default via %gateway% [[metric %metric%]] dev %iface% 2>&1 1>/dev/null || true ]]
+    ip -4 addr flush dev %iface% label %iface%
+    ip link set dev %iface% down \
+		if (iface_is_link())
+
+#+END_SRC
+
+#+BEGIN_SRC conf
+method manual
+  description
+    This method may be used to define interfaces for which no configuration
+    is done by default.  Such interfaces can be configured manually by
+    means of *up* and *down* commands or /etc/network/if-*.d scripts.
+
+  up
+
+  down
+#+END_SRC
+
+#+BEGIN_SRC conf
+method dhcp
+  description
+    This method may be used to obtain an address via DHCP with any of
+    the tools: dhclient, pump, udhcpc, dhcpcd.
+    (They have been listed in their order of precedence.)
+    If you have a complicated DHCP setup you should
+    note that some of these clients use their own configuration files
+    and do not obtain their configuration information via *ifup*.
+
+  options
+    hostname hostname       -- Hostname to be requested (pump, dhcpcd, udhcpc)
+    metric metric           -- Metric for added routes (dhclient)
+    leasehours leasehours   -- Preferred lease time in hours (pump)
+    leasetime leasetime     -- Preferred lease time in seconds (dhcpcd)
+    vendor vendor           -- Vendor class identifier (dhcpcd)
+    client client           -- Client identifier (dhcpcd, udhcpc)
+    hwaddress address       -- Hardware address.
+
+  conversion
+    hwaddress cleanup_hwaddress
+
+  up
+    [[ip link set dev %iface% address %hwaddress%]]
+    dhclient -v -pf /run/dhclient.%iface%.pid -lf /var/lib/dhcp/dhclient.%iface%.leases %iface% \
+	[[-e IF_METRIC=%metric%]] \
+        if (execable("/sbin/dhclient"))
+    dhclient3 -pf /run/dhclient.%iface%.pid -lf /var/lib/dhcp3/dhclient.%iface%.leases %iface% \
+	[[-e IF_METRIC=%metric%]] \
+        elsif (execable("/sbin/dhclient3"))
+    pump -i %iface% [[-h %hostname%]] [[-l %leasehours%]] \
+        elsif (execable("/sbin/pump") && mylinuxver() >= mylinux(2,1,100))
+    udhcpc -n -p /run/udhcpc.%iface%.pid -i %iface% [[-H %hostname%]] \
+           [[-c %client%]] \
+        elsif (execable("/sbin/udhcpc") && mylinuxver() >= mylinux(2,2,0))
+    dhcpcd [[-h %hostname%]] [[-i %vendor%]] [[-I %client%]] \
+           [[-l %leasetime%]] %iface% \
+        elsif (execable("/sbin/dhcpcd"))
+
+  down
+    dhclient -v -r -pf /run/dhclient.%iface%.pid -lf /var/lib/dhcp/dhclient.%iface%.leases %iface% \
+        if (execable("/sbin/dhclient"))
+    dhclient3 -r -pf /run/dhclient.%iface%.pid -lf /var/lib/dhcp3/dhclient.%iface%.leases %iface% \
+        elsif (execable("/sbin/dhclient3"))
+    pump -i %iface% -r \
+        elsif (execable("/sbin/pump") && mylinuxver() >= mylinux(2,1,100))
+    kill -USR2 $(cat /run/udhcpc.%iface%.pid); kill -TERM $(cat /run/udhcpc.%iface%.pid) \
+        elsif (execable("/sbin/udhcpc"))
+    dhcpcd -k %iface% \
+        elsif (execable("/sbin/dhcpcd"))
+
+    ip link set dev %iface% down \
+		if (iface_is_link())
+#+END_SRC
+
+#+BEGIN_SRC conf
+method bootp
+  description
+    This method may be used to obtain an address via bootp.
+
+  options
+    bootfile file  -- Tell the server to use /file/ as the bootfile.
+    server address -- Use the IP address /address/ to communicate with \
+                      the server.
+    hwaddr addr    -- Use /addr/ as the hardware address instead of \
+                      whatever it really is.
+
+  up
+    bootpc [[--bootfile %bootfile%]] --dev %iface% [[--server %server%]] \
+           [[--hwaddr %hwaddr%]] --returniffail --serverbcast
+
+  down
+    ip link set dev %iface% down \
+        if (execable("/sbin/ip") && iface_is_link())
+    ifconfig %iface% down \
+        elsif (1)
+
+#+END_SRC
+
+#+BEGIN_SRC conf
+method tunnel
+  description
+    This method is used to create GRE or IPIP tunnels. You need to have
+    the *ip* binary from the *iproute* package. For GRE tunnels, you
+    will need to load the ip_gre module and the ipip module for
+    IPIP tunnels.
+  options
+    address address       -- Local address (dotted quad) *required*
+    mode type             -- Tunnel type (either GRE or IPIP) *required*
+    endpoint address      -- Address of other tunnel endpoint *required*
+    dstaddr address       -- Remote address (remote address inside tunnel)
+    local address         -- Address of the local endpoint
+    gateway address       -- Default gateway
+    ttl time              -- TTL setting
+    mtu size              -- MTU size
+  up
+    ip tunnel add %iface% mode %mode% remote %endpoint% [[local %local%]] \
+       [[ttl %ttl%]]
+    ip link set %iface% up [[mtu %mtu%]]
+    ip addr add %address%/%netmask% dev %iface% [[peer %dstaddr%]]
+    [[ ip route add default via %gateway% ]]
+  down
+    ip tunnel del %iface%
+#+END_SRC
+
+#+BEGIN_SRC conf
+method ppp
+  description
+    This method uses pon/poff to configure a PPP interface. See those
+    commands for details.
+  options
+    provider name  -- Use /name/ as the provider (from /etc/ppp/peers).
+    unit number    -- Use /number/ as the ppp unit number.
+    options string -- Pass /string/ as additional options to pon.
+  up
+    pon [[%provider%]] [[unit %unit%]] [[%options%]]
+  down
+    poff [[%provider%]]
+#+END_SRC
+
+#+BEGIN_SRC conf
+method ipv4ll
+  description
+    This method uses avahi-autoipd to configure an interface with an
+    IPv4 Link-Layer address (169.254.0.0/16 family). This method is also
+    known as APIPA or IPAC, and often colloquially referred to
+    as "Zeroconf address".
+  up
+    /usr/sbin/avahi-autoipd -D %iface%
+  down
+    /usr/sbin/avahi-autoipd --kill %iface%
+#+END_SRC
+
+
 ** TODO IPv6 Address Family
 ** TODO IPX Address Family
 ** TODO CAN Address Family
