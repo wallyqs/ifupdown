@@ -2415,7 +2415,7 @@ then configure or deconfigure the interface, then run another set of
 scripts.
 
 This is complicated slightly in that they also have to handle the
-possibility that some of an interface's required arguments may be missing
+possibility that some of an interface required arguments may be missing
 (in which case none of the commands should be attempted), and that some
 of the commands may fail (in which case none of the following commands
 should be attempted). We've already encoded most of the early-abort
@@ -3576,7 +3576,7 @@ In addition, since our later behaviour varies depending on whether we're
 bringing interfaces up, taking them down, or querying /etc/network/interfaces,
 we'll define four chunks to assist with this, namely:
 
-<<we're querying an interface's config>>=
+<<we're querying an interface config>>=
 (cmds == iface_query)
 @
 
@@ -3759,7 +3759,7 @@ static void version(char *execname) {
 static void help(char *execname, int (*cmds)(interface_defn *)) {
 	printf("Usage: %s <options> <ifaces...>\n", execname);
 	if (<<we're listing known interfaces>>
-	    || <<we're querying an interface's config>>)
+	    || <<we're querying an interface config>>)
 		printf("       %s <options> --list\n", execname);
 	printf("\n");
 	printf("Options:\n");
@@ -3770,7 +3770,7 @@ static void help(char *execname, int (*cmds)(interface_defn *)) {
 	printf("\t-i, --interfaces FILE\tuse FILE for interface definitions\n");
 	printf("\t-X, --exclude PATTERN\texclude interfaces from the list of\n\t\t\t\tinterfaces to operate on by a PATTERN\n");
 	if (!<<we're listing known interfaces>>
-	    && !<<we're querying an interface's config>>)
+	    && !<<we're querying an interface config>>)
 		printf("\t-n, --no-act\t\tprint out what would happen, but don't do it\n");
 	printf("\t\t\t\t(note that this option doesn't disable mappings)\n");
 	printf("\t-v, --verbose\t\tprint out what would happen before doing it\n");
@@ -3780,10 +3780,10 @@ static void help(char *execname, int (*cmds)(interface_defn *)) {
 	printf("\t--no-scripts\t\tdon't run any hook scripts\n");
 	printf("\t--no-loopback\t\tdon't act specially on the loopback device\n");
 	if (!<<we're listing known interfaces>>
-	    && !<<we're querying an interface's config>>)
+	    && !<<we're querying an interface config>>)
 		printf("\t--force\t\t\tforce de/configuration\n");
 	if (<<we're listing known interfaces>>
-	    || <<we're querying an interface's config>>)
+	    || <<we're querying an interface config>>)
 		printf("\t--list\t\t\tlist all matching known interfaces\n");
 	exit(0);
 }
@@ -3832,7 +3832,7 @@ case 3:
 @ 
 <<[[getopt]] possibilities>>=
 case 'n':
-        if (<<we're listing known interfaces>> || <<we're querying an interface's config>>)
+        if (<<we're listing known interfaces>> || <<we're querying an interface config>>)
 		usage(argv[0]);
 	no_act = 1;
 	break;
@@ -3854,7 +3854,7 @@ case 5:
 @ 
 <<[[getopt]] possibilities>>=
 case 2:
-        if (<<we're listing known interfaces>> || <<we're querying an interface's config>>)
+        if (<<we're listing known interfaces>> || <<we're querying an interface config>>)
 		usage(argv[0]);
 	force = 1;
 	break;
@@ -3898,7 +3898,7 @@ case 'o':
 @ 
 <<[[getopt]] possibilities>>=
 case 'l':
-        if (!<<we're querying an interface's config>>)
+        if (!<<we're querying an interface config>>)
 		usage(argv[0]);
 	list = 1;
 	cmds = iface_list;
@@ -3946,7 +3946,7 @@ if (argc - optind == 0 && !do_all && !list) {
 @ 
 
 <<check unreasonable arguments>>=
-if (do_all && <<we're querying an interface's config>>) {
+if (do_all && <<we're querying an interface config>>) {
 	usage(argv[0]);
 }
 @ 
@@ -4000,7 +4000,7 @@ A broad overview of what we'll actually be doing is as follows:
 			continue;
 
 		bool have_mapping = false;
-		if ((<<we're bringing interfaces up>> && run_mappings) || <<we're querying an interface's config>>) {
+		if ((<<we're bringing interfaces up>> && run_mappings) || <<we're querying an interface config>>) {
 			<<run mappings>>
 		}
 
@@ -4046,7 +4046,7 @@ Actually running a mapping is fairly straightforward, thanks to our
 previous handywork.
 
 <<run mapping>>=
-if (<<we're querying an interface's config>> && !run_mappings) {
+if (<<we're querying an interface config>> && !run_mappings) {
 	if (verbose) {
 		fprintf(stderr, "Not running mapping scripts for %s\n",
 			liface);
@@ -4123,7 +4123,7 @@ Bringing an interface up or taking it down can be done thusly:
 
 	<<deconfigure the link>>
 
-	if (!okay && <<we're querying an interface's config>>) {
+	if (!okay && <<we're querying an interface config>>) {
 		if (!run_mappings) {
 			if (have_mapping) {
 				okay = 1;
@@ -4210,7 +4210,7 @@ Bringing an interface up or taking it down can be done thusly:
 {
 	if (verbose) {
 		fprintf(stderr, "%s interface %s=%s (%s)\n", 
-			<<we're querying an interface's config>> ? "Querying" :
+			<<we're querying an interface config>> ? "Querying" :
 			"Configuring",
 			iface, liface, currif->address_family->name);
 	}
@@ -4665,7 +4665,7 @@ not up, or uping one that's not down).
 			}
 			continue;
 		}
-	} else if (<<we're taking interfaces down>>) {
+	} else if (<<we are taking interfaces down>>) {
 		if (current_state == NULL) {
 			if (!do_all) {
 				fprintf(stderr, "%s: interface %s not configured\n",
@@ -4675,15 +4675,15 @@ not up, or uping one that's not down).
 		}
 		strncpy(liface, current_state, 80);
 		liface[79] = 0;
-	} else if (<<we're querying an interface's config>>) {
+	} else if (<<we are querying an interface config>>) {
 		if (current_state != NULL) {
 			strncpy(liface, current_state, 80);
 			liface[79] = 0;
 			run_mappings = 0;
 		}
 
-	} else if (!<<we're listing known interfaces>>
-	           && !<<we're querying an interface's config>>)
+	} else if (!<<we are listing known interfaces>>
+	           && !<<we are querying an interface config>>)
 	{
 		assert(0);
 	}
@@ -4695,7 +4695,7 @@ interfaces up and down.
 
 <<update ifupdown state>>=
 {
-	if (<<we're bringing interfaces up>>) {
+	if (<<we are bringing interfaces up>>) {
 		if ((current_state == NULL) || (no_act)) {
 			if (failed == 1) {
 				printf("Failed to bring up %s.\n", liface);
@@ -4706,10 +4706,10 @@ interfaces up and down.
 		} else {
 			update_state (argv[0], iface, liface);
 		}
-	} else if (<<we're taking interfaces down>>) {
+	} else if (<<we are taking interfaces down>>) {
 		update_state (argv[0], iface, NULL);
-	} else if (!<<we're listing known interfaces>>
-	           && !<<we're querying an interface's config>>)
+	} else if (!<<we are listing known interfaces>>
+	           && !<<we are querying an interface config>>)
 	{
 		assert(0);
 	}

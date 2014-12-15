@@ -1115,7 +1115,7 @@ In addition, since our later behaviour varies depending on whether we're
 bringing interfaces up, taking them down, or querying /etc/network/interfaces,
 we'll define four chunks to assist with this, namely:
 
-#+BEGIN_SRC C :noweb-ref we're querying an interface's config
+#+BEGIN_SRC C :noweb-ref we're querying an interface config
 (cmds == iface_query)
 #+END_SRC
 
@@ -1216,7 +1216,7 @@ A broad overview of what we'll actually be doing is as follows:
 			continue;
 
 		bool have_mapping = false;
-		if ((<<we are bringing interfaces up>> && run_mappings) || <<we are querying an interface's config>>) {
+		if ((<<we are bringing interfaces up>> && run_mappings) || <<we are querying an interface config>>) {
 			<<run mappings>>
 		}
 
@@ -1262,7 +1262,7 @@ Actually running a mapping is fairly straightforward, thanks to our
 previous handywork.
 
 #+BEGIN_SRC C :noweb-ref run mapping
-if (<<we are querying an interface's config>> && !run_mappings) {
+if (<<we are querying an interface config>> && !run_mappings) {
 	if (verbose) {
 		fprintf(stderr, "Not running mapping scripts for %s\n",
 			liface);
@@ -1339,7 +1339,7 @@ Bringing an interface up or taking it down can be done thusly:
 
 	<<deconfigure the link>>
 
-	if (!okay && <<we are querying an interface's config>>) {
+	if (!okay && <<we are querying an interface config>>) {
 		if (!run_mappings) {
 			if (have_mapping) {
 				okay = 1;
@@ -1426,7 +1426,7 @@ Bringing an interface up or taking it down can be done thusly:
 {
 	if (verbose) {
 		fprintf(stderr, "%s interface %s=%s (%s)\n", 
-			<<we are querying an interface's config>> ? "Querying" :
+			<<we are querying an interface config>> ? "Querying" :
 			"Configuring",
 			iface, liface, currif->address_family->name);
 	}
