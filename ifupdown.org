@@ -806,8 +806,132 @@ int execute(char *command, interface_defn *ifd, execfn *exec) {
 *** TODO Variables
 ** TODO Mapping Scripts
 * TODO The Driver
+
 ** TODO Check the Environment
 ** TODO Configuring or Deconfiguring?
+
+So the very first real thing we need to do is parse the command name. To
+do this, we'll obviously need to work out somewhere to store the result. A
+reasonable thing to do here is just to keep a function pointer about,
+which will point to one of the previously defined [[iface_up]] or
+[[iface_down]] functions, depending on which should be used on the
+specified interfaces.
+
+#+BEGIN_SRC C :noweb-ref variables local to main
+int (*cmds)(interface_defn *) = NULL;
+#+END_SRC
+
+So given this, we can just:
+
+#+BEGIN_SRC C :noweb-ref parse command name or die
+{
+	char *command;
+
+	<<set [[command]] to the base of the command name>>
+	<<set [[cmds]] based on [[command]] or die>>
+}
+#+END_SRC
+
+And fill out each component in the reasonably obvious manner of:
+
+#+BEGIN_SRC C :noweb-ref set [[command]] to the base of the command name
+if ((command = strrchr(argv[0],'/'))) {
+	command++; /* first char after / */
+} else {
+	command = argv[0]; /* no /'s in argv[0] */
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref set [[cmds]] based on [[command]] or die
+if (strcmp(command, "ifup")==0) {
+	cmds = iface_up;
+} else if (strcmp(command, "ifdown")==0) {
+	cmds = iface_down;
+} else if (strcmp(command, "ifquery")==0) {
+	cmds = iface_query;
+	no_act = 1;
+} else {
+	fprintf(stderr,"This command should be called as ifup, ifdown, or ifquery\n");
+	exit(1);
+}
+#+END_SRC
+
+In addition, since our later behaviour varies depending on whether we're
+bringing interfaces up, taking them down, or querying /etc/network/interfaces,
+we'll define four chunks to assist with this, namely:
+
+#+BEGIN_SRC C :noweb-ref we're querying an interface's config
+(cmds == iface_query)
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref we're listing known interfaces
+(cmds == iface_list)
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref we're bringing interfaces up
+(cmds == iface_up)
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref we're taking interfaces down
+(cmds == iface_down)
+#+END_SRC
+
+The [[--allow]] option lets us limit the interfaces ifupdown will act on.
+It's implemented by having an [[allow_class]] that tells us which class
+of interfaces we're working with, and skipping interfaces that aren't
+in that class, like so:
+
+#+BEGIN_SRC C :noweb-ref we're limiting to [[--allow]]ed interfaces
+(allow_class != NULL)
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref find [[iface]] in [[allow_class]] or [[continue]]
+{
+	int i;
+	allowup_defn *allowup = find_allowup(defn, allow_class);
+	if (allowup == NULL)
+		continue;
+
+	for (i = 0; i < allowup->n_interfaces; i++) {
+		if (strcmp(allowup->interfaces[i], iface) == 0)
+			break;
+	}
+	if (i >= allowup->n_interfaces)
+		continue;
+}
+#+END_SRC
+
+Finally, the behaviour might vary depending on whether we are 
+excluding this interface or not. Notice that
+the exclude option can use a full interface name or substrings that
+match interfaces. A user could easily have unexpected behaviour
+if he uses a small string to do the match:
+
+#+BEGIN_SRC C :noweb-ref we're [[--exclude]]ing this interface
+(excludeints != 0 && match_patterns(iface, excludeints, excludeint))
+#+END_SRC
+
+[[match_patterns]] function goes through exclusion patterns and returns [[true]] if it finds at least one match.
+
+#+BEGIN_SRC C :noweb-ref main function declarations
+bool match_patterns(char * string, int argc, char * argv[]);
+#+END_SRC
+
+It's implemented using [[fnmatch]] function, so we can use shell globs.
+
+#+BEGIN_SRC C :noweb-ref main functions
+bool match_patterns(char * string, int argc, char * argv[]) {
+	if (!argc || !argv || !string) return false;
+	int i;
+	for (i = 0; i < argc; i++) {
+		if (fnmatch(argv[i], string, 0) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+#+END_SRC
+
 ** TODO Argument Handling
 ** TODO Reading the Interfaces File
 ** TODO Execution
