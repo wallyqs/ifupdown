@@ -605,6 +605,50 @@ $DEB_HOST_ARCH_OS =~ s/\n//;
 *** TODO Environment handling
 *** TODO Command Execution
 *** TODO Executing a list of commands
+
+In addition to the above, we also need a function to cope with running
+all the [[pre-up]] commands and so forth.
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+int execute_options(interface_defn *ifd, execfn *exec, char *opt);
+int execute_scripts(interface_defn *ifd, execfn *exec, char *opt);
+#+END_SRC
+
+All we need to do for this is to iterate through the options in the
+interface definition, and execute whichever ones are the right type,
+and call the [[run-parts]] command on the appropriate directory of
+scripts. That doesn't make for thrilling code.
+
+This function will generally have [[doit]] passed in as the [[exec]]
+parameter.
+
+#+BEGIN_SRC C :noweb-ref execute functions
+
+int execute_options(interface_defn *ifd, execfn *exec, char *opt) {
+	int i;
+	for (i = 0; i < ifd->n_options; i++) {
+		if (strcmp(ifd->option[i].name, opt) == 0) {
+			if (!(*exec)(ifd->option[i].value)) {
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+int execute_scripts(interface_defn *ifd, execfn *exec, char *opt) {
+	if (!run_scripts) return 1;
+
+	char buf[100];
+	snprintf(buf, sizeof(buf), "run-parts %s /etc/network/if-%s.d",
+		verbose ? "--verbose" : "", opt);
+
+	(*exec)(buf); 
+
+	return 1;
+}
+
+#+END_SRC
 *** TODO [[iface_up()]], [[iface_down()]], [[iface_list()]], and [[iface_query()]]
 
 Our functions, then are:
