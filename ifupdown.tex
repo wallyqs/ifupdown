@@ -2788,7 +2788,7 @@ int iface_up(interface_defn *iface) {
 When bringing interface down, we check if there's [[ifup]] is still running
 and send [[SIGTERM]] to terminate it.
 
-<<terminate ifup if it's still running>>=
+<<terminate ifup if it is still running>>=
 char pidfilename[100];
 snprintf(pidfilename, sizeof(pidfilename), RUN_DIR "ifup-%s.pid",
 	iface->real_iface);
@@ -2809,7 +2809,7 @@ if (pidfile) {
 <<execute functions>>=
 int iface_predown(interface_defn *iface) {
 	if (!no_act) {
-	    <<terminate ifup if it's still running>>
+	    <<terminate ifup if it is still running>>
 	}
 
 	if (!iface->method->down(iface,check)) return -1;
