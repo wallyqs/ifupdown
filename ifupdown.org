@@ -1,5 +1,6 @@
 #+TITLE: ifupdown : Interface Tools
 #+AUTHOR: Anthony Towns (aj@azure.humbug.org.au)
+#+OPTIONS: todo:t ^:nil
 
 #+BEGIN_QUOTE
 Copyright \copyright\ 1999--2007 Anthony Towns. This program is free
@@ -128,7 +129,7 @@ structure definitions, exported interfaces and so on.
 
 #+END_SRC
 
-** The Build System
+* The Build System
 
 We shall begin with the template for the Makefile we shall use.
 
@@ -536,7 +537,7 @@ address_family *addr_fams[] = {
 
 #+END_SRC
 
-** Generating C Code
+** TODO Generating C Code
 
 Unfortunately, while the [[.defn]] representation is reasonably
 convenient for human use, it's less convenient for a compiler. As
@@ -587,3 +588,53 @@ $DEB_HOST_ARCH_OS =~ s/\n//;
 #+END_SRC
 
 # Around line 578...
+
+** TODO Building Manual Pages
+* TODO Run-time Configuration
+** TODO File Handling
+** TODO Line Parsing
+** TODO Line Processing
+*** TODO Source Line
+*** TODO Mapping Line
+*** TODO Interface line
+*** TODO Auto and Allow Lines
+** TODO Error Handling
+* TODO Execution
+** TODO Interface Configuration and Deconfiguration
+*** TODO Command checking
+*** TODO Environment handling
+*** TODO Command Execution
+*** TODO Executing a list of commands
+*** TODO [[iface_up()]], [[iface_down()]], [[iface_list()]], and [[iface_query()]]
+** TODO Command Parsing
+*** TODO Maintain output buffer
+*** TODO Escaped characters
+*** TODO Optional components
+*** TODO Variables
+** TODO Mapping Scripts
+* TODO The Driver
+** TODO Check the Environment
+** TODO Configuring or Deconfiguring?
+** TODO Argument Handling
+** TODO Reading the Interfaces File
+** TODO Execution
+** TODO Target Interfaces
+** TODO State
+* TODO Architecture-dependent functions
+** TODO Common functions
+** TODO Linux-specific functions
+** TODO kFreeBSD-specific functions
+** TODO Hurd-specific functions
+* TODO Linux Address Families
+** TODO IPv4 Address Family
+** TODO IPv6 Address Family
+** TODO IPX Address Family
+** TODO CAN Address Family
+* TODO kFreeBSD Address Families
+** TODO IPv4 Address Family
+** TODO IPv6 Address Family
+* TODO Hurd Address Families
+** TODO IPv4 Address Family
+** TODO IPv6 Address Family
+* TODO Internal address metafamily
+* TODO Link pseudo address family
