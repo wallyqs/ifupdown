@@ -591,6 +591,330 @@ $DEB_HOST_ARCH_OS =~ s/\n//;
 
 ** TODO Building Manual Pages
 * TODO Run-time Configuration
+
+Our module is of the usual form, and we'll make use of a few fairly standard
+headers. Please move along, there's nothing to see here.
+
+#+BEGIN_SRC C :tangle src/config.c
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <errno.h>
+#include <assert.h>
+
+<<config function declarations>>
+<<config functions>>
+#+END_SRC
+
+We'll also make use of some of our other modules. This is, after all,
+why we had a single header in the first place.
+
+#+BEGIN_SRC C :tangle src/config.c
+#include "header.h"
+#+END_SRC
+
+The key function we're interested in defining here is
+[[read_interfaces()]], which will (wait for it) read an interfaces
+file. The intention is to make it really easy to deal with the
+vagaries of [[/etc/network/interfaces]] anywhere else.
+
+So the first question we need to deal with is ``What's a convenient
+form for other functions which deal with interfaces?'' Well, our
+answer to that is basically:
+
+- an array of interface names that should be brought up at
+  bootup.
+
+- a singly linked list to represent the various mappings.
+
+- another singly linked list to represent the interface
+  definitions themselves.
+
+These are almost in exact correspondence with the original file.
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct interfaces_file interfaces_file;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct interfaces_file {
+	allowup_defn *allowups;
+	interface_defn *ifaces;
+	mapping_defn *mappings;
+};
+#+END_SRC
+
+So, at run-time, we first need a way of dealing with the [[auto]] and
+[[allow-*]] lines. We'll treat [[allow-auto]] and [[auto]] as equivalent,
+making that pretty straightforward:
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct allowup_defn allowup_defn;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct allowup_defn {
+	allowup_defn *next;
+
+	char *when;
+	int max_interfaces;
+	int n_interfaces;
+	char **interfaces;
+};
+#+END_SRC
+
+We also require a way of representing each interface listed in the
+configuration file. This naturally needs to reference an address family
+and method, and all the options a user may specify about an interface.
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct interface_defn interface_defn;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct interface_defn {
+	interface_defn *next;
+
+	char *logical_iface;
+	char *real_iface;
+
+	address_family *address_family;
+	method *method;
+
+	int automatic;
+
+	int max_options;
+	int n_options;
+	variable *option;
+};
+#+END_SRC
+
+The last component in the above, the options, is represented by a
+series of name/value pairs, as follows:
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct variable variable;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct variable {
+	char *name;
+	char *value;
+};
+#+END_SRC
+
+We'll define a function to help us build arrays of these [[variables]].
+It's fairly straightforward: to add a variable, we simply construct
+a new structure and add it at the end of our array of variables,
+increasing the size of the array first if necessary. [[set_variable]]
+function adds a variable if it doesn't exist yet, or updates one which
+is already set but only if the variable name doesn't end with a question
+mark. If [[set_variable]] didn't do anything to the variable, it returns
+NULL.
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+variable * set_variable(char *filename, char *name, char *value, 
+		variable **var, int *n_vars, int *max_vars);
+void convert_variables(char *filename, conversion *conversions, 
+		interface_defn *ifd);
+#+END_SRC
+
+#+BEGIN_SRC C
+variable * set_variable(char *filename, char *name, char *value, 
+		variable **var, int *n_vars, int *max_vars)
+{
+	/*
+	 * if name ends with '?', don't update
+	 * the variable if it already exists
+	 */
+	bool dont_update = false;
+
+	size_t len = strlen(name);
+
+	if (name[len - 1] == '?') {
+	    dont_update = true;
+	    len--;
+	}
+	if (strcmp(name, "pre-up") != 0
+    	&& strcmp(name, "up") != 0
+	    && strcmp(name, "down") != 0
+	    && strcmp(name, "post-down") != 0)
+	{
+		int j;
+		for (j = 0; j < *n_vars; j++) {
+			if (strncmpz(name, (*var)[j].name, len) == 0)
+			{
+				if (dont_update) {
+					return NULL;
+				}
+
+				if ((*var)[j].value == value) {
+				    return value;
+				}
+
+				free((*var)[j].value);
+				(*var)[j].value = strdup(value);
+				if (!(*var)[j].value) {
+					<<report internal error and die>>
+				}
+
+				return &((*var)[j]);
+			}
+		}
+	}
+
+	if (*n_vars >= *max_vars) {
+		variable *new_var;
+		*max_vars += 10;
+		new_var = realloc(*var, sizeof(variable) * *max_vars);
+		if (new_var == NULL) {
+			<<report internal error and die>>
+		}
+		*var = new_var;
+	}
+
+	(*var)[*n_vars].name = strndup(name, len);
+	(*var)[*n_vars].value = strdup(value);
+
+	if (!(*var)[*n_vars].name) {
+		<<report internal error and die>>
+	}
+
+	if (!(*var)[*n_vars].value) {
+		<<report internal error and die>>
+	}
+
+	(*n_vars)++;
+	return &((*var)[(*n_vars) - 1]);
+}
+
+void convert_variables(char *filename, conversion *conversions, 
+		interface_defn *ifd)
+{
+	conversion *c;
+	for (c = conversions; c && c->option && c->fn; c++) {
+		if (strcmp(c->option, "iface") == 0) {
+			if (c->newoption) {
+				variable *o = set_variable(filename, c->newoption, ifd->real_iface,
+					&ifd->option, &ifd->n_options, &ifd->max_options);
+				if (o)
+					c->fn(ifd, &o->value, c->argc, c->argv);
+				continue;
+			}
+		}
+
+		int j;
+		for (j = 0; j < ifd->n_options; j++) {
+			if (strcmp(ifd->option[j].name, c->option) == 0)
+			{
+				if (c->newoption) {
+					variable *o = set_variable(filename, c->newoption, ifd->option[j].value,
+						&ifd->option, &ifd->n_options, &ifd->max_options);
+					if (o)
+						c->fn(ifd, &o->value, c->argc, c->argv);
+				} else {
+					variable *o = &(ifd->option[j]);
+					c->fn(ifd, &o->value, c->argc, c->argv);
+				}
+			}
+		}
+	}
+}
+
+#+END_SRC
+
+In addition, we want to represent each mapping in the configuration
+file. This is somewhat simpler, since each mapping is entirely self
+contained, and doesn't need to reference previously determined address
+families or methods or anything.
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct mapping_defn mapping_defn;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct mapping_defn {
+	mapping_defn *next;
+
+	int max_matches;
+	int n_matches;
+	char **match;
+
+	char *script;
+
+	int max_mappings;
+	int n_mappings;
+	char **mapping;
+};
+#+END_SRC
+
+We can thus begin to instantiate our actual function. What we want is
+something that, given the name of a file, will produce the appropriate
+linked list of interfaces defined in it, or possibly give some sort of
+helpful error message. Pretty simple, hey?
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+interfaces_file *read_interfaces(char *filename);
+interfaces_file *read_interfaces_defn(interfaces_file *defn, char *filename);
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref config functions
+interfaces_file *read_interfaces(char *filename) {
+	interfaces_file *defn;
+
+	<<allocate defn or [[return NULL]]>>
+	return read_interfaces_defn(defn, filename);
+}
+
+interfaces_file *read_interfaces_defn(interfaces_file *defn, char *filename) {
+	<<variables local to read interfaces>>
+
+	<<open file or [[return NULL]]>>
+
+	while (<<we've gotten a line from the file>>) {
+		<<process the line>>
+	}
+	if (<<an error occurred getting the line>>) {
+		<<report internal error and die>>
+	}
+
+	<<close file>>
+
+	return defn;
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref allocate defn or [[return NULL]]
+defn = malloc(sizeof(interfaces_file));
+if (defn == NULL) {
+	return NULL;
+}
+defn->allowups = NULL;
+defn->mappings = NULL;
+defn->ifaces = NULL;
+
+if (!no_loopback) {
+	interface_defn * lo_if = malloc(sizeof(interface_defn));
+	if (!lo_if) {
+		<<report internal error and die>>
+	}
+
+	*lo_if = (interface_defn){
+	    .logical_iface = strdup(LO_IFACE),
+	    .max_options = 0,
+	    .address_family = &addr_inet,
+	    .method = get_method(&addr_inet, "loopback"),
+	    .n_options = 0,
+	    .option = NULL,
+	    .next = NULL
+	};
+
+	defn->ifaces = lo_if;
+
+	add_allow_up(__FILE__, __LINE__, get_allowup(&defn->allowups, "auto"), lo_if->logical_iface);
+}
+#+END_SRC
+
 ** TODO File Handling
 ** TODO Line Parsing
 ** TODO Line Processing
@@ -599,6 +923,7 @@ $DEB_HOST_ARCH_OS =~ s/\n//;
 *** TODO Interface line
 *** TODO Auto and Allow Lines
 ** TODO Error Handling
+ 
 * TODO Execution
 
 ** TODO Interface Configuration and Deconfiguration
