@@ -600,6 +600,7 @@ $DEB_HOST_ARCH_OS =~ s/\n//;
 *** TODO Auto and Allow Lines
 ** TODO Error Handling
 * TODO Execution
+
 ** TODO Interface Configuration and Deconfiguration
 *** TODO Command checking
 *** TODO Environment handling
@@ -1189,7 +1190,414 @@ bool match_patterns(char * string, int argc, char * argv[]) {
 ** TODO Argument Handling
 ** TODO Reading the Interfaces File
 ** TODO Execution
+
+A broad overview of what we'll actually be doing is as follows:
+
+#+BEGIN_SRC C :noweb-ref run commands for appropriate interfaces
+<<determine target interfaces>>
+<<run pre-up and pre-down scripts for all>>
+{
+	int i;
+	for (<<each target interface, [[i]]>>) {
+		char iface[80], liface[80];
+		const char *current_state;
+
+		<<initialize [[iface]] to [[i]]th target interface>>
+		current_state = read_state(argv[0], iface);
+		if (!force) {
+			<<check ifupdown state (possibly [[continue]])>>
+		}
+
+		if (<<we're limiting to [[--allow]]ed interfaces>>) {
+			<<find [[iface]] in [[allow_class]] or [[continue]]>>
+		}
+
+		if (<<we're [[--exclude]]ing this interface>>)  
+			continue;
+
+		bool have_mapping = false;
+		if ((<<we're bringing interfaces up>> && run_mappings) || <<we're querying an interface's config>>) {
+			<<run mappings>>
+		}
+
+		<<bring interface up/down and update ifupdown state>>
+	}
+}
+<<run post-up and post-down scripts for all>>
+#+END_SRC
+
+We'll leave determining the appropriate target interfaces and dealing
+with the state until a little later. That leaves us with covering running
+the mappings and bringing the interface up or taking it down.
+
+Mappings are dealt with like so:
+
+#+BEGIN_SRC C :noweb-ref run mappings
+{
+	mapping_defn *currmap;
+	for (currmap = defn->mappings; currmap; currmap = currmap->next) {
+		int i;
+		for (i = 0; i < currmap->n_matches; i++) {
+			<<[[continue]] unless mapping matches>>
+			<<run mapping>>
+			break;
+		}
+	}
+}
+#+END_SRC
+
+We check if mappings match by using shell globs, so we'll need a new header
+to take care of that.
+
+#+BEGIN_SRC C :noweb-ref main headers
+#include <fnmatch.h>
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref [[continue]] unless mapping matches
+if (fnmatch(currmap->match[i], liface, 0) != 0)
+	continue;
+#+END_SRC
+
+Actually running a mapping is fairly straightforward, thanks to our
+previous handywork.
+
+#+BEGIN_SRC C :noweb-ref run mapping
+if (<<we're querying an interface's config>> && !run_mappings) {
+	if (verbose) {
+		fprintf(stderr, "Not running mapping scripts for %s\n",
+			liface);
+	}
+	have_mapping = true;
+	break;
+}
+if (verbose) {
+	fprintf(stderr, "Running mapping script %s on %s\n",
+		currmap->script, liface);
+}
+run_mapping(iface, liface, sizeof(liface), currmap);
+#+END_SRC
+
+Bringing an interface up or taking it down can be done thusly:
+
+#+BEGIN_SRC C :noweb-ref bring interface up/down and update ifupdown state
+{
+	interface_defn *currif;
+	int okay = 0;
+	int failed = 0; 
+
+	<<update ifupdown state>>
+
+	if (<<we're listing known interfaces>>) {
+	    for (currif = defn->ifaces; currif; currif = currif->next) {
+		    if (strcmp(liface, currif->logical_iface) == 0) {
+			okay = 1;
+		    }
+	    }
+	    if (!okay) {
+		    mapping_defn *currmap;
+		    for (currmap = defn->mappings; currmap; currmap = currmap->next) {
+			    int i;
+			    for (i = 0; i < currmap->n_matches; i++) {
+				    <<[[continue]] unless mapping matches>>
+				    okay = 1;
+				    break;
+			    }
+		    }
+	    }
+	    if (okay) {
+		    currif = defn->ifaces;
+		    currif->real_iface = iface;
+		    cmds(currif);
+		    currif->real_iface = NULL;
+	    }
+	    okay = 0;
+	    continue;
+	}
+
+	for (currif = defn->ifaces; currif; currif = currif->next) {
+		if (strcmp(liface, currif->logical_iface) == 0) {
+			<<configure the link>>
+			okay = 1;
+
+			<<add default options to [[currif]]>>
+
+			<<add options from command line to [[currif]]>>
+
+			currif->real_iface = iface;
+
+			<<convert options>>
+
+			<<run commands for [[currif]]; set [[failed]] on error>>
+
+			currif->real_iface = NULL;
+
+			if (failed) break;
+			/* Otherwise keep going: this interface may have
+			 * match with other address families */
+		}
+	}
+
+	<<deconfigure the link>>
+
+	if (!okay && <<we're querying an interface's config>>) {
+		if (!run_mappings) {
+			if (have_mapping) {
+				okay = 1;
+			}
+		}
+		if (!okay) {
+			<<report unknown interface and die>>
+		}
+	}
+
+	if (!okay && !force) {
+		fprintf(stderr, "Ignoring unknown interface %s=%s.\n", 
+			iface, liface);
+		update_state (argv[0], iface, NULL);
+	} else {
+		<<update ifupdown state>>
+	}
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref configure the link
+	if (!okay && <<we're bringing interfaces up>>) {
+		interface_defn link = {
+		    .real_iface = iface,
+		    .logical_iface = liface,
+		    .max_options = 0,
+		    .address_family = &addr_link,
+		    .method = &(addr_link.method[0]),
+		    .n_options = 0,
+		    .option = NULL
+		};
+		convert_variables(argv[0], link.method->conversions, &link);
+
+		if (!link.method->up(&link, doit)) break;
+		if (link.option) free(link.option);
+	}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref deconfigure the link
+	if (okay && <<we're taking interfaces down>>) {
+		interface_defn link = {
+		    .real_iface = iface,
+		    .logical_iface = liface,
+		    .max_options = 0,
+		    .address_family = &addr_link,
+		    .method = &(addr_link.method[0]),
+		    .n_options = 0,
+		    .option = NULL
+		};
+		convert_variables(argv[0], link.method->conversions, &link);
+
+		if (!link.method->down(&link, doit)) break;
+		if (link.option) free(link.option);
+	}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref create pidfile
+{
+	char * command;
+	<<set [[command]] to the base of the command name>>
+	snprintf(pidfilename, sizeof(pidfilename), RUN_DIR "%s-%s.pid",
+		command, currif->real_iface);
+	if (!no_act) {
+		FILE * pidfile = fopen(pidfilename, "w");
+		if (pidfile) {
+			fprintf(pidfile, "%d", getpid());
+			fclose(pidfile);
+		} else {
+			fprintf(stderr, 
+				"%s: failed to open pid file %s: %s\n",
+				command, pidfilename, strerror(errno));
+		}
+	}
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref remove pidfile
+	if (!no_act) {
+		unlink(pidfilename);
+	}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref run commands for [[currif]]; set [[failed]] on error
+{
+	if (verbose) {
+		fprintf(stderr, "%s interface %s=%s (%s)\n", 
+			<<we're querying an interface's config>> ? "Querying" :
+			"Configuring",
+			iface, liface, currif->address_family->name);
+	}
+
+	char pidfilename[100];
+	<<create pidfile>>
+
+	switch(cmds(currif)) {
+	    case -1:
+		fprintf(stderr, "Missing required configuration variables for interface %s/%s.\n", 
+			liface, currif->address_family->name);
+		failed = 1;
+		break;
+	    case 0:
+		failed = 1;
+		break;
+		/* not entirely successful */
+	    case 1:
+	    	failed = 0;
+		break;
+		/* successful */
+	    default:
+	    	fprintf(stderr, "Unexpected value when configuring interface %s/%s; considering it failed.\n", 
+			liface, currif->address_family->name);
+	    	failed = 1;
+		/* what happened here? */
+	}
+
+	<<remove pidfile>>
+}
+#+END_SRC
+
+Before bringing interfaces up or putting them down, we may want to call some
+scripts interested in being notified when all the interfaces are going to
+be brought up:
+
+#+BEGIN_SRC C :noweb-ref run pre-up and pre-down scripts for all
+interface_defn meta_iface = {
+    .next = NULL,
+    .real_iface = "--all",
+    .address_family = &addr_meta,
+    .method = &(addr_meta.method[0]),
+    .automatic = 1,
+    .max_options = 0,
+    .n_options = 0,
+    .option = NULL
+};
+
+if (do_all) {
+    meta_iface.logical_iface = allow_class ? allow_class : "auto";
+
+    int okay = 1;
+    if (<<we're bringing interfaces up>>) {
+	okay = iface_preup(&meta_iface);
+    }
+    if (<<we're taking interfaces down>>) {
+	okay = iface_predown(&meta_iface);
+    }
+    if (!okay) {
+	fprintf(stderr, "%s: pre-%s script failed.\n", argv[0], &argv[0][2]);
+	exit(1);
+    }
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref run post-up and post-down scripts for all
+if (do_all) {
+    int okay = 1;
+    if (<<we're bringing interfaces up>>) {
+	okay = iface_postup(&meta_iface);
+    }
+    if (<<we're taking interfaces down>>) {
+	okay = iface_postdown(&meta_iface);
+    }
+    if (!okay) {
+	fprintf(stderr, "%s: post-%s script failed.\n", argv[0], &argv[0][2]);
+	exit(1);
+    }
+}
+#+END_SRC
+
+Before adding any options from the command line we set the default options if
+they've not been set already:
+
+#+BEGIN_SRC C :noweb-ref add default options to [[currif]]
+{
+	option_default *o;
+	for (o = currif->method->defaults; o && o->option && o->value; o++) {
+		int j;
+		int found = 0;
+		for (j = 0; j < currif->n_options; j++) {
+			if (strcmp(currif->option[j].name, 
+			           o->option) == 0) 
+			{
+				found = 1;
+				break;
+			}
+		}
+		if (!found) {
+			set_variable(argv[0], o->option, o->value,
+				&currif->option, &currif->n_options, 
+				&currif->max_options);
+		}
+	}
+}
+#+END_SRC
+
+Adding the options from the command line is tedious, but simple:
+
+#+BEGIN_SRC C :noweb-ref add options from command line to [[currif]]
+{
+	int i;
+	for (i = 0; i < n_options; i++) {
+		if (option[i].value[0] == '\0') {
+			<<remove [[option[i]]] from [[currif]]>>
+		} else {
+			<<add [[option[i]]] to [[currif]]>>
+		}
+	}
+}
+#+END_SRC
+
+Convert the options:
+
+#+BEGIN_SRC C :noweb-ref convert options
+{
+	convert_variables(argv[0], currif->method->conversions, currif);
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref add [[option[i]]] to [[currif]]
+{
+	set_variable(argv[0], option[i].name, option[i].value,
+		&currif->option, &currif->n_options, 
+		&currif->max_options);
+}
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref remove [[option[i]]] from [[currif]]
+{
+	if (strcmp(option[i].name, "pre-up") != 0
+    	    && strcmp(option[i].name, "up") != 0
+	    && strcmp(option[i].name, "down") != 0
+	    && strcmp(option[i].name, "post-down") != 0)
+	{
+		int j;
+		for (j = 0; j < currif->n_options; j++) {
+			if (strcmp(currif->option[j].name, 
+			           option[i].name) == 0) 
+			{
+				currif->n_options--;
+				break;
+			}
+		}
+		for (; j < currif->n_options; j++) {
+			option[j].name = option[j+1].name;
+			option[j].value = option[j+1].value;
+		}
+	} else {
+		/* do nothing */
+	}
+}
+#+END_SRC
+
 ** TODO Target Interfaces
+
+So, if we're going to actually do something, we should probably figure
+out exactly what we're going to do it to. So, we need to know the set
+of interfaces we're going to hax0r. This is just an array of interfaces,
+either [[physical_iface]] or [[physical_iface=logical_iface]].
+
 ** TODO State
 * TODO Architecture-dependent functions
 
