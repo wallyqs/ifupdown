@@ -1,0 +1,589 @@
+#+TITLE: ifupdown : Interface Tools
+#+AUTHOR: Anthony Towns (aj@azure.humbug.org.au)
+
+#+BEGIN_QUOTE
+Copyright \copyright\ 1999--2007 Anthony Towns. This program is free
+software; you can redistribute it and/or modify it under the terms of
+the GNU General Public License as published by the Free Software
+Foundation; either version 2 of the License, or (at your option) any
+later version.  
+#+END_QUOTE
+
+* Introduction
+
+This source defines the commands [[ifup]], [[ifdown]], and [[ifquery]], used
+to manipulate interfaces in an easily controllable manner.
+
+** Assumed Knowledge
+
+The reader is assumed to have knowledge of the C \cite{K&R} and Perl
+\cite{camel} programming languages in a Unix environment \cite{StevensUnix}.
+A cursory understanding of network administration on the appropriate
+platform is also assumed, along with access to the relevant manual
+pages as necessary.
+
+This source has been written as a literate program using the [[noweb]]
+\cite{wwwnoweb} tool suite, and typeset using \LaTeX\ \cite{latex}.
+
+** Program Structure
+
+We shall decompose this program into four main areas of functionality:
+
+- compile-time configuration
+- run-time configuration
+- execution
+- and the overall driver
+
+Compile-time configuration will deal with differing available address
+families (IP vs IPX vs IPv6, and so on), and the differing methods of
+enabling and disabling interfaces configured for each family. This will
+be implemented using the [[addrfam]] module, and various [[.defn]] files,
+for the address family definitions.
+
+Run-time configuration will deal with determining the local setup
+based on the file [[/etc/network/interfaces]], and producing a data
+structure encapsulating these details. This will be implemented in the
+[[config]] module.
+
+Execution will deal with issues relating to working out exactly which
+commands to run based on a somewhat abstract description from the
+compile-time configuration and the details determined at
+run-time. This will be dealt with in the [[execute]] module.
+
+The remaining work --- argument parsing, error reporting, and,
+essentially, putting all the pieces together --- is done by the
+[[main]] module.
+
+The following diagram gives a brief idea of the information and control
+flow amongst the modules.
+
+# How to generate?
+
+#+BEGIN_SRC tex
+\def\vsep{2.5cm}
+\def\hsep{1.4cm}
+\begin{figure}
+\centering
+\begin{tikzpicture}[every text node part/.style={text centered}]
+    \tikzstyle{block}=[rectangle,draw, text width=2cm, minimum height=2cm]
+    \tikzstyle{big}=[minimum height=4.5cm]
+    \tikzstyle{annot}=[above left]
+
+    \node[block] (ip) at (0,0) {IP address family};
+    \node[annot] at (ip.south east) {\small inet.defn};
+
+    \node[block] (ipx) at (0,-\vsep) {IPX address
+    family};
+    \node[annot] at (ipx.south east) {\small inet.defn};
+
+    \node[block,big] (addrfam) at (\hsep*2,-\vsep/2) {Compile time configuration};
+    \node[annot] at (addrfam.south east) {\small addrfam.c};
+
+    \node[block,big] (config) at (\hsep*4,-\vsep/2) {Runtime configuration};
+    \node[annot] at (config.south east) {\small config.c};
+
+    \node[block] (exec) at (\hsep*6,0) {Execution};
+    \node[annot] at (exec.south east) {\small execute.c};
+
+    \node[block] (main) at (\hsep*6,-\vsep) {Driver};
+    \node[annot] at (main.south east) {\small main.c};
+
+    \draw[-stealth] (ip.east) -- (addrfam.west |- ip);
+    \draw[-stealth] (ipx.east) -- (addrfam.west |- ipx);
+    \draw[-stealth] (addrfam) -- (config);
+    \draw[stealth-] (exec.west) -- (config.east |- exec);
+    \draw[stealth-] (main.west) -- (config.east |- main);
+    \draw[-stealth] (main) -- (exec);
+
+    \node[below=1.2cm of config.south] (mainf) {main()};
+
+    \draw[-stealth, rounded corners=0.3cm] (mainf) -- +(0,1cm) -| (main.south);
+\end{tikzpicture}
+\end{figure}
+#+END_SRC
+
+Much of the information sharing will be done by defining and filling
+in some data structures and allowing the other modules to just access
+that information directly. Rather than hiding the information itself,
+most of our modules simply attempt to hide how that information was
+originally written. Because of this, we shall find that these modules are
+too closely linked to be completely separated in a convenient manner,
+so they will all make use of a single header file for each other's
+structure definitions, exported interfaces and so on.
+
+#+BEGIN_SRC C :mkdirp true :tangle src/header.h
+#ifndef HEADER_H
+#define HEADER_H
+
+#include <stdbool.h>
+
+<<type definitions>>
+<<function type definitions>>
+<<structure definitions>>
+<<constant definitions>>
+<<exported symbols>>
+<<address family declarations>>
+
+#endif /* HEADER_H */
+
+#+END_SRC
+
+** The Build System
+
+We shall begin with the template for the Makefile we shall use.
+
+#+BEGIN_SRC conf :mkdirp true :tangle src/Makefile 
+
+<<make options>>
+ARCH ?= linux
+
+BASEDIR ?= $(DESTDIR)
+
+CFILES := addrfam.c execute.c config.c main.c arch$(ARCH).c
+HFILES := header.h arch$(ARCH).h
+PERLFILES := defn2c.pl defn2man.pl
+DEFNFILES := inet.defn ipx.defn inet6.defn can.defn
+
+OBJ := main.o addrfam.o execute.o config.o \
+	$(patsubst %.defn,%.o,$(DEFNFILES)) arch$(ARCH).o meta.o link.o
+
+MAN := $(patsubst %.defn,%.man,$(DEFNFILES))
+DEFNFILES += meta.defn link.defn
+
+default : executables
+all : executables docs
+
+executables : ifup ifdown ifquery ifup.8 ifdown.8 ifquery.8 interfaces.5
+docs : ifupdown.ps.gz ifup.8.ps.gz interfaces.5.ps.gz ifupdown.pdf
+
+.PHONY : executables 
+<<phony targets>>
+<<executable targets>>
+<<manpage targets>>
+<<extra dependencies>>
+<<implicit rules>>
+
+<<generated dependency inclusion>>
+
+#+END_SRC
+
+We shall build exactly three executables, [[ifup]], [[ifdown]] and
+[[ifquery]], which will in truth simply be three names for a single binary,
+albeit with different functionality.
+
+#+BEGIN_SRC conf :noweb-ref executable targets
+ifup: $(OBJ)
+	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(OUTPUT_OPTION)
+
+ifdown: ifup
+	ln -sf ifup ifdown
+
+ifquery: ifup
+	ln -sf ifup ifquery
+
+#+END_SRC
+
+All three of these executables have a manpage. Since they're actually the
+same executable, what could be more appropriate than them having the
+same manpage too?
+
+#+BEGIN_SRC conf :noweb-ref manpage targets
+interfaces.5: interfaces.5.pre $(MAN)
+	sed $(foreach man,$(MAN),-e '/^##ADDRESSFAM##$$/r $(man)') \
+	     -e '/^##ADDRESSFAM##$$/d' < $< > $@	
+
+ifdown.8 ifquery.8: ifup.8
+	ln -sf $< $@
+
+%.5.ps: %.5
+	groff -mandoc -Tps $< > $@
+%.8.ps: %.8
+	groff -mandoc -Tps $< > $@
+
+#+END_SRC
+
+Further, for convenience, we'll make use of two phony targets, [[clean]],
+[[clobber]] and [[distclean]], which will delete working files, everything
+that can be rebuilt with a [[make]] command, and everything that can be
+rebuilt at all, respectively.
+
+#+BEGIN_SRC conf :noweb-ref phony targets
+.PHONY : clean clobber
+
+install :
+	install -m 0755 -d     ${BASEDIR}/sbin
+	install -m 0755 ifup   ${BASEDIR}/sbin
+	ln ${BASEDIR}/sbin/ifup ${BASEDIR}/sbin/ifdown	
+	ln ${BASEDIR}/sbin/ifup ${BASEDIR}/sbin/ifquery
+
+clean :
+	rm -f *.aux *.toc *.log *.bbl *.blg *.ps *.eps *.pdf
+	rm -f *.o *.d $(patsubst %.defn,%.c,$(DEFNFILES)) *~
+	rm -f $(patsubst %.defn,%.man,$(DEFNFILES))
+	rm -f ifup ifdown ifquery interfaces.5 ifdown.8 ifquery.8
+	rm -f ifupdown.dvi *.ps{,.gz}
+
+clobber : clean
+	rm -f ifupdown.tex $(PERLFILES) $(CFILES) $(HFILES) $(DEFNFILES) arch*
+
+distclean : clobber
+	rm -f makecdep.sh makenwdep.sh Makefile
+
+#+END_SRC
+
+We have some fairly standard rules to build the printed version of the
+source code using \LaTeX\ that are, unfortunately, not included in
+[[make(1)]]'s builtin rules, so we'll note them here.
+
+#+BEGIN_SRC conf :noweb-ref implicit rules
+%.tex : %.nw
+	noweave -delay -index -latex $< >$@
+
+%.bbl : %.tex biblio.bib
+	latex $<
+	bibtex $(basename $<)
+
+%.dvi : %.tex %.bbl
+	latex $<
+	latex $<
+
+%.pdf : %.tex %.bbl
+	pdflatex $<
+	pdflatex $<
+
+%.ps : %.dvi
+	dvips -o $@ $<
+
+%.gz : %
+	gzip --best --stdout $< >$@
+
+#+END_SRC
+
+Additionally, some of [[make]]'s builtin rules are fairly
+conservative, so we'll encourage it to use a more entertaining method
+of compiling source code.
+
+#+BEGIN_SRC conf :noweb-ref make options
+
+VERSION ?= 0.7
+CFLAGS ?= -Wall -W -g -O2 -D'IFUPDOWN_VERSION="$(VERSION)"'
+
+#+END_SRC
+
+** Graphics
+
+We include a few graphics (made using dia) in this document. We have to
+express these fairly explicitly, unfortunately.
+
+#+BEGIN_SRC conf :noweb-ref implicit rules
+%.eps : %.dia
+	dia --nosplash -e $@ $<
+
+%.pdf : %.eps
+	gs -q -sDEVICE=pdfwrite -dNOPAUSE -sOutputFile=$@ - < $<
+
+#+END_SRC
+
+#+BEGIN_SRC conf :noweb-ref extra dependencies
+
+ifupdown.dvi: modules.eps execution.eps
+ifupdown.ps: modules.eps execution.eps
+ifupdown.pdf: modules.pdf execution.pdf
+
+#+END_SRC
+
+** Automatic Dependencies
+
+To build the system, we'll make use of some techniques discussed in
+\cite{recursivemake} for determining dependencies. Namely, a number
+of files will have an associated [[.d]] file containing dynamically
+determined dependency information. The first such file we will construct
+is the dependency information for [[noweb]] source files, which can be
+identified by the [[.nw]] extension.
+
+#+BEGIN_SRC conf :noweb-ref implicit rules
+
+%.d: %.nw makenwdep.sh
+	./makenwdep.sh $< > $@
+
+#+END_SRC
+
+To construct the dependency information, we may use the [[noroots(1)]]
+command to determine the \emph{root chunks} in the [[noweb]] source
+(stripping the unwanted [[<<]] and [[>>]] markers as we go, and
+denoting that in such a way that [[noweb]] doesn't mistakenly think
+the [[sed]] command is a chunk reference itself), and then noting down
+appropriate commands to construct the target.
+
+#+BEGIN_SRC conf :noweb-ref makenwdep arguments
+
+<<parse makenwdep arguments>>
+
+noroots $FILE | sed 's/^<''<\(.*\)>>$/\1/' |
+	while read chunk; do
+		<<output dependency info for [[$chunk]]>>
+	done
+
+#+END_SRC
+
+Our dependency information is straightforward. To construct a file from
+[[noweb]] source, we simply need to run [[notangle(1)]] over it. We add
+a couple of extra tweaks in order to only update files that were actually
+changed (the [[cpif(1)]] call), and to handle tabs properly.
+
+We also need some extra things to take care of particular types of files.
+In particular its important to have our scripts marked executable, so we
+can use them as part of the build process itself, and it's also important
+to have the dependency information for our C files (which are dealt with
+next) included at some point.
+
+#+BEGIN_SRC sh :noweb-ref output dependency info for [[$chunk]]
+printf "%s : %s\n" "$chunk" "$FILE"
+case $chunk in
+	*.pl|*.sh)
+		printf "\tnotangle -R\$@ \$< >\$@\n"
+		printf "\tchmod 755 %s\n" "$chunk"
+		;;
+	*.c)
+		printf "\tnotangle -L -R\$@ \$< | cpif \$@\n"
+		printf "include ${chunk%.c}.d\n"
+		;;
+	*.h)
+		printf "\tnotangle -L -R\$@ \$< | cpif \$@\n"
+		;;
+	*)
+		printf "\tnotangle -t8 -R\$@ $< >\$@\n"
+		;;
+esac
+
+#+END_SRC
+
+Finally, our fairly primitive argument parsing is simply:
+
+#+BEGIN_SRC sh :noweb-ref parse makenwdep arguments
+FILE=$1
+
+if [ "$FILE" = "" -o ! -f "$FILE" ]; then
+	echo "Please specify a .nw file"
+	exit 1
+fi
+
+#+END_SRC
+
+We have a related system for object files generated from C source
+code. Since each object file depends not only on its source, but also
+the headers included in that source, we generate a [[.d]] file indicating
+exactly which headers need to be checked.
+
+#+BEGIN_SRC sh :noweb-ref implicit rules
+
+%.d: %.c makecdep.sh
+	./makecdep.sh $< > $@
+
+#+END_SRC
+
+We can do this using [[gcc(1)]]'s convenient [[-MM -MG]] options,
+which do exactly this, with the added proviso that the [[.d]] file
+itself can possibly depend on any of the header files being modified
+(and, in particular, [[#include]] lines being added or deleted).
+
+#+BEGIN_SRC sh :tangle makecdep.sh
+#!/bin/sh
+<<parse makecdep arguments>>
+
+gcc -MM -MG $FILE |
+  sed -e 's@^\(.*\)\.o:@\1.o \1.d:@'
+@ 
+
+\emph{Deja vu}, anyone?
+
+<<parse makecdep arguments>>= 
+FILE=$1
+if [ "$FILE" = "" -o ! -f "$FILE" ]; then
+	echo "Please specify a .c file"
+	exit 1
+fi
+#+END_SRC
+
+To include the generated dependencies in [[Makefile]], we have to
+be a bit careful.  The problem here is that they should not be rebuild
+when merely the cleaning of the source tree is asked for.  Any targets
+ending in [[clean]], plus the [[clobber]] target prevent the inclusion
+of the generated dependencies.
+
+Unfortunately, [[make]] doesn't allow logical combinations within
+[[ifeq]] and friends, so we have to simulate this.
+
+#+BEGIN_SRC conf :noweb-ref generated dependency inclusion
+
+include-deps := YES
+ifneq "" "$(filter %clean,$(MAKECMDGOALS))"
+include-deps := NO
+endif
+ifeq "clobber" "$(MAKECMDGOALS)"
+include-deps := NO
+endif
+
+#+END_SRC
+
+Finally, include the dependency information:
+
+#+BEGIN_SRC conf :noweb-ref generated dependency inclusion
+
+ifeq "$(strip $(include-deps))" "YES"
+include ifupdown.d
+endif
+
+#+END_SRC
+
+* Compile Time Configuration
+
+At compile time we need to determine all the possible address families
+that may be used, and all the methods of setting up interfaces for
+those address families, along with the various possible options
+affecting each method.
+
+Our key definition at this point is that of the [[address_family]]
+structure, which encapsulates all the compile time information about
+each address family.
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct address_family address_family;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct address_family {
+	char *name;
+	int n_methods;
+	method *method;
+};
+#+END_SRC
+
+Each defined address family will be included in the [[addr_fams]]
+array, which becomes the \emph{raison d'\^etre} of the [[addrfam]]
+module.
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+extern address_family *addr_fams[];
+#+END_SRC
+
+Each address family incorporates a number of methods, which
+encapsulate various ways of configuring an interface for a particular
+address family. There are three components of a method: two sets of
+commands to bring an interface up and down, a number of options for
+the commands, and a set of conversion functions to allow programmatic
+manipulation of the options.
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct method method;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct method {
+	char *name;
+	command_set *up, *down;
+	conversion *conversions;
+	option_default *defaults;
+};
+#+END_SRC
+
+Each command set is implemented as a single function, accepting two
+parameters: the definitions of the interface the commands should deal
+with, and the function that should be used to execute them. See the
+[[execute]] module for more details.
+
+#+BEGIN_SRC C :noweb-ref function type definitions
+typedef int (execfn)(char *command);
+typedef int (command_set)(interface_defn *ifd, execfn *e);
+#+END_SRC
+
+Each conversion is implemented as a mapping from an option name, to a
+function that updates that option's value or adds a new variable which
+value is the result of conversion, as follows:
+
+#+BEGIN_SRC C :noweb-ref type definitions
+typedef struct conversion conversion;
+typedef struct option_default option_default;
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref structure definitions
+struct conversion {
+	char *option;
+	char *newoption;
+	void (*fn)(interface_defn *, char **, int, char **);
+	int argc;
+	char ** argv;
+};
+
+struct option_default {
+	char *option;
+	char *value;
+};
+#+END_SRC
+
+As our compile-time configuration is done at, well, compile-time, there
+is little need for functions in the actual module, and we can make do with
+a single exported array.
+
+#+BEGIN_SRC C :tangle addrfam.c
+#include <stdlib.h>
+#include "header.h"
+
+address_family *addr_fams[] = {
+	<<address family references>>
+	NULL
+};
+
+#+END_SRC
+
+** Generating C Code
+
+Unfortunately, while the [[.defn]] representation is reasonably
+convenient for human use, it's less convenient for a compiler. As
+such, at build time, we will build a single structure of type
+[[address_family]] in a separate module, and reference that from
+[[addrfam.c]].
+
+Naturally, we'll use a [[perl]] script to convert [[.defn]] files to C
+code.
+
+#+BEGIN_SRC conf :noweb-ref implicit rules
+%.c : %.defn defn2c.pl
+	./defn2c.pl $< > $@
+#+END_SRC
+
+The functionality of our program is pretty basic: read from the file
+specified as the argument, output to [[stdout]]; and correspondingly
+the structure of the program is similarly simple. We make use of a
+couple of global variables, a few helpful subroutines, and then build
+our C program.
+
+#+BEGIN_SRC perl :tangle defn2c.pl
+#!/usr/bin/perl -w
+
+use strict;
+
+<<determine the target architecture>>
+
+# declarations
+<<defn2c variables>>
+
+# subroutines
+<<defn2c subroutines>>
+
+# main code
+<<output headers for address family>>
+<<parse [[.defn]] file and output intermediate structures>>
+<<output address family data structure>>
+
+#+END_SRC
+
+First of all, we determine the target architecture by calling [[dpkg-architecture]] and stripping the trailing newline:
+
+#+BEGIN_SRC perl :noweb-ref determine the target architecture
+my $DEB_HOST_ARCH_OS = `dpkg-architecture -qDEB_HOST_ARCH_OS`;
+
+$DEB_HOST_ARCH_OS =~ s/\n//;
+#+END_SRC
+
+# Around line 578...

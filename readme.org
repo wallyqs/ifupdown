@@ -1,0 +1,8 @@
+# -*- mode: org; mode: auto-fill -*-
+#+title: ifupdown implementation in Org
+
+(/Incomplete/)
+
+The =ifupdown= source code used to be implemented in noweb style
+up to [[https://bitbucket.org/ifupdown/ifupdown/commits/eb636614476b7f9af64620fe8f298d2f03abf7ce][this commit]].  I found the original implementation in noweb
+interesting so this is an attempt at salvaging some of it using Org.
