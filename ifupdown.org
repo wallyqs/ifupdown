@@ -604,6 +604,55 @@ $DEB_HOST_ARCH_OS =~ s/\n//;
 *** TODO Command checking
 *** TODO Environment handling
 *** TODO Command Execution
+
+Our [[doit()]] function is then essentially a rewrite of the standard
+[[system()]] function call. The only additions are that we setup our
+child's environment as discussed previously, and we make use of two
+external globals, [[no_act]] and [[verbose]] and modify our behaviour
+based on those.
+
+#+BEGIN_SRC C :noweb-ref exported symbols
+int doit(char *str);
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref execute functions
+int doit(char *str) {
+	assert(str);
+	bool ignore_status = false;
+	if (*str == '-') {
+	    ignore_status = true;
+	    str++;
+	}
+
+	if (verbose || no_act) {
+		fprintf(stderr, "%s\n", str);
+	}
+	if (!no_act) {
+		pid_t child;
+		int status;
+
+		fflush(NULL);
+		setpgid(0, 0);
+		switch(child = fork()) {
+		    case -1: /* failure */
+			return 0;
+		    case 0: /* child */
+			execle("/bin/sh", "/bin/sh", "-c", str, NULL, environ);
+			exit(127);
+		    default: /* parent */
+		    	break;
+		}
+		waitpid(child, &status, 0);
+		if (ignore_status)
+			return 1;
+
+		if (!WIFEXITED(status) || WEXITSTATUS(status) != 0)
+			return 0;
+	}
+	return 1;
+}
+#+END_SRC
+
 *** TODO Executing a list of commands
 
 In addition to the above, we also need a function to cope with running
