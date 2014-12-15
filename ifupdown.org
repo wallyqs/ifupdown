@@ -926,6 +926,48 @@ if (!no_loopback) {
  
 * TODO Execution
 
+The [[execute]] module will be laid out in the standard manner, and
+will make use of the usual header files.
+
+#+BEGIN_SRC C :tangle src/execute.c
+<<execute headers>>
+<<execute global variables>>
+<<execute function declarations>>
+<<execute functions>>
+#+END_SRC
+
+#+BEGIN_SRC C :noweb-ref execute headers
+#include <stdio.h>
+#include <ctype.h>
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+
+#include "header.h"
+#+END_SRC
+
+The key functions we export from here are all the functions that as a
+fairly direct result run some executable.
+
+- [[iface_up()]] and [[iface_down()]] which will actually
+  configure or deconfigure an interface.
+
+- [[iface_list()]] which permits querying a list of known
+  interfaces by class.
+
+- [[iface_query()]], to query configuration details about a
+  specific interface by name.
+
+- [[execute()]] which will take an interface definition and
+  a command and fill in the details from the first into the
+  second, and the execute the result. This is basically just a
+  callback for the address family module.
+
+- [[run_mapping()]] which will run a mapping script and
+  determine if a new logical interface should be selected.
+
+We'll discuss each of these in order.
+
 ** TODO Interface Configuration and Deconfiguration
 *** TODO Command checking
 *** TODO Environment handling
@@ -2811,7 +2853,6 @@ method ipv4ll
   down
     /usr/sbin/avahi-autoipd --kill %iface%
 #+END_SRC
-
 
 ** TODO IPv6 Address Family
 ** TODO IPX Address Family
